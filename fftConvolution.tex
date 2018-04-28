@@ -8,6 +8,9 @@
 \usepackage{xcolor}
 \usepackage{lmodern}
 \usepackage[T1]{fontenc}
+\usepackage{xparse}% http://ctan.org/pkg/xparse
+\NewDocumentCommand{\Log}{o}{%
+  \IfNoValueTF{#1}{}{{}^{#1}\!}\log}%
 
 \settopmatter{printacmref=false} % Removes citation information below abstract
 \renewcommand\footnotetextcopyrightpermission[1]{} % removes footnote with conference information in first column
@@ -160,9 +163,6 @@ result is the actual convolution result. Fig. 4 illustrates these pre-processing
 
 The advantage of using FFT is that it is a well-studied technique since the early ages of signal processing and there are highly optimized implementations for parallel computing. Also, FFT gives the best advantage when the image and kernel size is larger. This is because FFT method does not need to move over the image in strides, but a single FFT gives the convolution result for the whole image. The only downside is the overhead of re-arranging the matrix for FFT and the actual process of computing the FFT.
 
-
-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-
 There are other advantages of choosing an FFT based convolution implementation as listed below:
 \begin{enumerate}
 \item Convolution in the time domain becomes multiplication in the frequency domain. This reduces the sheer number of add-multiplies. [11] describes the theoretical computations of both direct method and the FFT method, and it shows that as the size of the input increases, FFT based method tends to outperform the direct method by a large margin.
@@ -191,10 +191,10 @@ The algorithm we chose for our parallel implementation is based on a paper calle
 Fig.5 shows the block diagram for the split stream FFT. First we will look at how to do FFT along a single dimension and then we will extend this to a 2D FFT. A row of data is considered a work group, which means the threads within this work group can share data across each other using a shared memory and also the steps can be synchronized across threads.
 \begin{enumerate}
 \item Bit reversal: The left most block is the first stage. The data needs to be re-arranged in bit-reversed order initially to avoid the strided reads in later stages. The positions of bit reversed indices are pre-computed and stored in main memory. The data is read with this indexing so that when they are stored in registers of a thread they are in the bit-reversed order. This helps in saving time as compared to the method of reading in the whole row and then trying to swap the elements into their correct position in place.
-\item Work item: Every two consecutive elements are handled by a single thread and this forms a work item. So for a row of size ‘n’, there are ‘n/2’ work items and up to ‘n/2’ threads. This is because the mapping is not one to one between a work item and a thread, as the compute units use SIMD (Single Instruction Multiple Data) to do vector operations. A single thread can, in theory, do 32 length vector operations (SIMD32) on the machine that we are testing on [13]. In practice, of course, it is vectorized as much as is allowed by other dependent resource such as registers and barriers.
+\item Work item: Every two consecutive elements are handled by a single thread and this forms a work item. So for a row of size $n$, there are $\frac{n}{2}$ work items and up to $\frac{n}{2}$ threads. This is because the mapping is not one to one between a work item and a thread, as the compute units use SIMD (Single Instruction Multiple Data) to do vector operations. A single thread can, in theory, do 32 length vector operations (SIMD32) on the machine that we are testing on [13]. In practice, of course, it is vectorized as much as is allowed by other dependent resource such as registers and barriers.
 \item Twiddle factors: Computing FFT needs complex exponentials often called the twiddle factors. Since computing these on the fly can take time and also as they are reused for every row, it makes sense to compute them pre-hand and store in shared memory. Each work item reads only the twiddle factor which it needs for computing its elements from the common memory space. 
 \item Each work item does following operations: it adds the two elements it is working on and stores the result in a shared memory space of the workgroup. Similarly, it subtracts the two elements and multiplies the difference with the twiddle factor and stores the result again to the shared memory.
-\item We wait until all the work items have finished step (4) before the next stage. This is achieved using a barrier. After that, the output computed by the threads at the end of stage (4) forms input for the next stage and we repeat steps (2) through (4) for ‘x’ iterations. Here ‘x’ is the logarithm to base 2 of the row size ‘n’.	
+\item We wait until all the work items have finished step (4) before the next stage. This is achieved using a barrier. After that, the output computed by the threads at the end of stage (4) forms input for the next stage and we repeat steps (2) through (4) for $x$ iterations where $ x = \log _2 n $, $n$ is row size.	
 \end{enumerate}
 
 The implementation uses decimation in frequency approach. The above yields 1D-FFT for a row of data. We launch as many work groups as there are number of rows, so we get one dimensional FFT for each row, but we need 2D-FFT for our convolution operation. To get this, we transpose the 1D-FFT result and then take row-wise 1D-FFT again over this and do a transpose of the result. This method works because FFT is separable linearly along its dimensions. Doing single dimension FFT twice saves computations as compared to doing a complex two dimensional FFT in one go. One optimization here is that we can eliminate the second transpose. This is because the FFT results of image and kernel are multiplied elementwise, and then we take inverse FFT to get the time domain values. Hence the two transpose operations cancel each other. Another optimization is computing the first transpose. Usually transpose operation does not render itself well for parallel computations, therefore there are methods which do tiled transpose, wherein they read a small square tile and write it out transposed. This is to coalesce the memory accesses. In our approach, since the data was already in the registers after computation we could do a scattered write to the transposed positions. Hence thereby avoiding reading the data again from main memory.
@@ -211,7 +211,7 @@ There is also documented usage of mixed radix where in bigger radix is used in i
 
 
 \section{Optimizations}
-Our implementations make use of many of the nice properties of FFT for real valued signals. One of them is the Hermitian property – FFT of a real valued signal is a complex conjugate signal. This allows us to combine two rows into a single row by placing one row as the real part and the other row as the imaginary part. Then we compute single FFT of this complex signal and extract the FFT of the individual rows. Also, because of Hermitian property, when we take 2D FFT of a real valued signal we can crop half of the matrix after the 1D FFT, as the data will be complex conjugate and then compute FFT over half the matrix. The FFT so obtained can be restored to full length post computation.
+Our implementations make use of many of the nice properties of FFT for real valued signals. One of them is the Hermitian property : FFT of a real valued signal is a complex conjugate signal. This allows us to combine two rows into a single row by placing one row as the real part and the other row as the imaginary part. Then we compute single FFT of this complex signal and extract the FFT of the individual rows. Also, because of Hermitian property, when we take 2D FFT of a real valued signal we can crop half of the matrix after the 1D FFT, as the data will be complex conjugate and then compute FFT over half the matrix. The FFT so obtained can be restored to full length post computation.
 
 \section{Future Work}
 As identified in the previous section, we can try to use radix 4 to reduce the computations and hence to increase the throughput. Another idea is that we can, in theory, avoid scrambling the input data if we do decimation in time for forward FFT and then do decimation in frequency for inverse FFT.
