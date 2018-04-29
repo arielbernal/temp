@@ -9,6 +9,8 @@
 \usepackage{lmodern}
 \usepackage[T1]{fontenc}
 \usepackage{xparse}% http://ctan.org/pkg/xparse
+ \usepackage{tikz}
+\usepackage{pgfplots}
 \NewDocumentCommand{\Log}{o}{%
   \IfNoValueTF{#1}{}{{}^{#1}\!}\log}%
 
@@ -200,9 +202,73 @@ Fig.5 shows the block diagram for the split stream FFT. First we will look at ho
 The implementation uses decimation in frequency approach. The above yields 1D-FFT for a row of data. We launch as many work groups as there are number of rows, so we get one dimensional FFT for each row, but we need 2D-FFT for our convolution operation. To get this, we transpose the 1D-FFT result and then take row-wise 1D-FFT again over this and do a transpose of the result. This method works because FFT is separable linearly along its dimensions. Doing single dimension FFT twice saves computations as compared to doing a complex two dimensional FFT in one go. One optimization here is that we can eliminate the second transpose. This is because the FFT results of image and kernel are multiplied elementwise, and then we take inverse FFT to get the time domain values. Hence the two transpose operations cancel each other. Another optimization is computing the first transpose. Usually transpose operation does not render itself well for parallel computations, therefore there are methods which do tiled transpose, wherein they read a small square tile and write it out transposed. This is to coalesce the memory accesses. In our approach, since the data was already in the registers after computation we could do a scattered write to the transposed positions. Hence thereby avoiding reading the data again from main memory.
 
 \section{Results}
-We chose clFFT as the benchmark to compare against our implementation. The results of split stream FFT were validated against an online implementation of FFT to verify the functional correctness of the algorithm. After that we compared the run time of our FFT for one dimensional inputs of different sizes which are relevant to convolution operation. Fig. 6 shows this plot, where input size is on the horizontal dimension and the speedup of our FFT versus clFFT is plotted in the vertical axis. A speedup of 1 means that both implementations are taking the same time. Whereas a speedup of more than one implies our FFT is faster. As seen in the plot, our FFT outperforms clFFT by at least 1.5x across the input sizes. For some input sizes it outperforms by up to 3x as seen from the plot, but it is an improvement overall in the input range of interest.
+We chose clFFT as the benchmark to compare against our implementation. The results of split stream FFT were validated against an online implementation of FFT to verify the functional correctness of the algorithm. After that we compared the run time of our FFT for one dimensional inputs of different sizes which are relevant to convolution operation. Fig. \ref{fft_1d} shows this plot, where input size is on the horizontal dimension and the speedup of our FFT versus clFFT is plotted in the vertical axis. A speedup of 1 means that both implementations are taking the same time. Whereas a speedup of more than one implies our FFT is faster. As seen in the plot, our FFT outperforms clFFT by at least 1.5x across the input sizes. For some input sizes it outperforms by up to 3x as seen from the plot, but it is an improvement overall in the input range of interest.
 
-Next in Fig. 7 we plot the performance for 2D-FFT. It seems that the 2D-FFT is performing better than benchmark for inputs of smaller size, but does not scale well for larger size inputs. The observed results were confirmed over multiple runs. 
+\begin{figure}[h] 
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    title={1D FFT performance},
+    xlabel={FFT size},
+    ylabel={Speedup factor},
+    xmin=0, xmax=1024,
+    ymin=0, ymax=3.5,
+    symbolic x coords={0, 8, 16, 32, 64, 128, 256, 512, 1024},
+    xtick=data,
+    ytick={0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5},
+    legend pos=north east,
+    ymajorgrids=true,
+    grid style=dashed,
+]
+ 
+\addplot[
+    color=blue,
+    mark=square,
+    ]
+    coordinates {
+    (8,3.16)(16, 2.98)(32, 2.09)(64, 2.12)(128, 1.62)(256, 2.52)(512, 1.6)(1024, 2.01)
+    };
+    \legend{$\frac{time(spFFT)}{time(clFFT)}$}
+ 
+\end{axis}
+\end{tikzpicture}
+	\caption {Plot showing 1D-FFT throughput ratio comparison with varying input sizes}
+	\label{fft_1d}
+\end{figure}
+
+Next in Fig. \ref{fft_2d} we plot the performance for 2D-FFT. It seems that the 2D-FFT is performing better than benchmark for inputs of smaller size, but does not scale well for larger size inputs. The observed results were confirmed over multiple runs. 
+
+\begin{figure}[h] 
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    title={2\-D FFT performance},
+    xlabel={FFT size},
+    ylabel={Speedup factor},
+    xmin=0, xmax=256,
+    ymin=0, ymax=3,
+    symbolic x coords={0, 8, 16, 32, 64, 128, 256},
+    xtick=data,
+    ytick={0, 0.5, 1, 1.5, 2, 2.5, 3},
+    legend pos=north east,
+    ymajorgrids=true,
+    grid style=dashed,
+]
+ 
+\addplot[
+    color=blue,
+    mark=square,
+    ]
+    coordinates {
+    (8,1.18)(16, 1.47)(32, 2.62)(64, 1.7)(128, 1.18)(256, 0.83)
+    };
+    \legend{$\frac{time(spFFT)}{time(clFFT)}$}
+ 
+\end{axis}
+\end{tikzpicture}
+	\caption {Plot showing 2D-FFT throughput ratio comparison with varying input sizes}
+	\label{fft_2d}
+\end{figure}
 
 \section{Analysis}
 One dimensional FFT outperforms significantly better than benchmark. But the same scaling was not seen in two dimensional FFT. Analysis of the kernel logs did not seem to point anything wrong with the implementation, but analysis of the benchmark revealed that the algorithm switches between two different radix decimations. In our algorithm, we always use radix 2 and we need logarithm (to base 2) number of iterations to compute the output FFT. However, if we use a higher radix, like radix 4 the number of iterations needed to compute the output reduces. According to [7] radix 4 algorithm provides a saving of 15\% over radix 2, so it seems the benchmark algorithm switching over to radix 4 when the input is more than a certain threshold starts to outperform at larger input sizes. From this point onwards the performance improvement we obtained from all the optimizations starts to wane compared with the radix 4 algorithm. 
@@ -218,7 +284,6 @@ As identified in the previous section, we can try to use radix 4 to reduce the c
 
 \section{Conclusion}
 In this project we implemented a new FFT keeping the end goal of convolution and which can operate on heterogeneous compute platforms. The new FFT was shown to be outperforming the benchmark for one dimensional case and performed quite well for initial range of inputs for two dimensional case. The possible choices for improving the performance further were identified.
-
 
 
 \let\thefootnote\relax\footnote{Intel and the Intel logo are trademarks of Intel Corporation or its subsidiaries in the U.S. and/or other countries.*Other names and brands may be claimed as the property of others. OpenCL and the OpenCL logo are trademarks of Apple Inc. used by permission by Khronos.}  
